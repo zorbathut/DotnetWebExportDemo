@@ -16,20 +16,6 @@ public partial class Player : CharacterBody3D
 
     public override void _PhysicsProcess(double delta)
     {
-        if (Input.IsActionJustPressed("pause"))
-        {
-            if (Input.MouseMode == Input.MouseModeEnum.Captured)
-            {
-                Input.MouseMode = Input.MouseModeEnum.Visible;
-                GetTree().Paused = true;
-            }
-            else
-            {
-                Input.MouseMode = Input.MouseModeEnum.Captured;
-                GetTree().Paused = false;
-            }
-        }
-
         if (GetTree().Paused) { return; }
 
         ProcessMouse();
@@ -85,6 +71,23 @@ public partial class Player : CharacterBody3D
 
     public override void _UnhandledInput(InputEvent @event)
     {
+        if (@event.IsActionPressed("pause"))
+        {
+            if (GetTree().Paused)
+            {
+                Input.MouseMode = Input.MouseModeEnum.Captured;
+                GetTree().Paused = false;
+            }
+            else
+            {
+                Input.MouseMode = Input.MouseModeEnum.Visible;
+                GetTree().Paused = true;
+            }
+        }
+
+        // StringName d;
+        // d.ToString();
+
         if (GetTree().Paused) { return; }
 
         if (@event is InputEventMouseMotion mouseMotion && !mouseMotion.ScreenRelative.IsZeroApprox())

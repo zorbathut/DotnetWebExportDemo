@@ -2,11 +2,10 @@
 export PATH=$PATH
 
 
-__is_interactive=false
-
 __string_contain() { case $2 in *$1* ) return 0;; *) return 1;; esac ;}
 
 
+__is_interactive=false
 __call_print() {
     echo "$@"
     local call=true
@@ -24,7 +23,7 @@ __call_print() {
 
 
 __parse_args(){
-    local cli_args=("mono" "executable" "static" "shared" "suffix")
+    local cli_args=("mono" "executable" "static" "shared" "suffix" "arch" "platform")
     while :; do
         local matched=false
         local variable="$1"
@@ -50,34 +49,54 @@ __parse_args(){
 
 
 __parse_godot_args() {
-    local suffix=""
+    local local_suffix=""
     __parse_args "$@"
 
     if [ "$arg_executable" = true ]; then
         type_args="library_type=executable"
-        suffix="executable"
+        local_suffix="executable"
     elif [ "$arg_static" = true ]; then
         type_args="library_type=static_library lto=none"
-        suffix="static"
+        local_suffix="static"
     elif [ "$arg_shared" = true ]; then
         type_args="library_type=shared_library"
-        suffix="shared"
+        local_suffix="shared"
     fi
     if [ "$arg_mono" = true ]; then
         mono_args="module_mono_enabled=yes"
-        suffix="${suffix}.mono"
     fi
 
-    type_args="${type_args} extra_suffix=${suffix}"
+    type_args="${type_args} extra_suffix=${local_suffix}"
+
+    if [ -n "$arg_platform" ]; then
+        type_args="platform=$arg_platform $type_args"
+    fi
+
+    if [ "$arg_mono" = true ] && [ "$arg_platform" = "web" ]; then
+        local dotnet_emsdk=/usr/share/dotnet/packs/Microsoft.NET.Runtime.Emscripten.3.1.56.Sdk.linux-x64/10.0.3/
+        local dotnet_emsdk_node=/usr/share/dotnet/packs/Microsoft.NET.Runtime.Emscripten.3.1.56.Node.linux-x64/10.0.3/
+        export EMSDK_PATH=$dotnet_emsdk/tools
+        export DOTNET_EMSCRIPTEN_LLVM_ROOT=$EMSDK_PATH/bin
+        export DOTNET_EMSCRIPTEN_NODE_JS=$dotnet_emsdk_node/tools/bin/node
+        export DOTNET_EMSCRIPTEN_BINARYEN_ROOT=$EMSDK_PATH
+        export FROZEN_CACHE=""
+        export EM_CACHE=./bin/em_cache
+        mkdir -p ./bin/em_cache
+        source $dotnet_emsdk/tools/emsdk_env.sh
+    fi
+
+    if __string_contain "llvm" "$arg_suffix"; then
+        type_args="$type_args linker=lld use_llvm=yes"
+    fi
 }
 
 
 __build_godot_editor() {
     __parse_godot_args "$@"
 
-    __call_print scons target=editor $type_args production=yes debug_symbols=yes use_llvm=yes linker=lld compiledb=yes $mono_args $arg_rest
+    __call_print scons target=editor $type_args production=yes debug_symbols=yes compiledb=yes disable_path_overrides=no $mono_args ${arg_rest[@]}
     if [ "$arg_executable" = true ] && [ -n "$mono_args" ]; then
-        __call_print find ./bin -name "godot.*.editor.*executable.mono*" -type f -exec {} --generate-mono-glue ./modules/mono/glue ';'
+        __call_print find ./bin -name "godot.*.editor.*executable.mono*" -type f -exec {} --generate-mono-glue ./modules/mono/glue --headless ';'
         __call_print ./modules/mono/build_scripts/build_assemblies.py --godot-output-dir ./bin --push-nupkgs-local ./../.nuget_local/
     fi
 }
@@ -86,14 +105,14 @@ __build_godot_editor() {
 __build_godot_template_debug() {
     __parse_godot_args "$@"
 
-    __call_print scons target=template_debug $type_args production=yes debug_symbols=yes use_llvm=yes linker=lld compiledb=yes $mono_args $arg_rest
+    __call_print scons target=template_debug $type_args production=yes debug_symbols=yes compiledb=yes disable_path_overrides=no $mono_args ${arg_rest[@]}
 }
 
 
 __build_godot_template_release() {
     __parse_godot_args "$@"
 
-    __call_print scons target=template_release $type_args production=yes use_llvm=yes linker=lld compiledb=yes $mono_args $arg_rest
+    __call_print scons target=template_release $type_args production=yes compiledb=yes disable_path_overrides=no $mono_args ${arg_rest[@]}
 }
 
 
@@ -124,24 +143,37 @@ __parse_cpp_args() {
         godot_type="shared"
     fi
 
-    godot_platform=${arg_rest[0]}
+    if [ -z "$arg_platform" ]; then
+        echo "Must specify "platform=" for C++"
+        exit 1
+    fi
 
-    if [ -z "$arg_suffix" ] && [ "$godot_platform" = "linuxbsd" ]; then
-        arg_suffix="llvm"
+    godot_platform="$arg_platform"
+
+    if [ -z "$arg_arch" ]; then
+        arg_arch="x86_64"
+    fi
+
+    if [ "$godot_platform" = "web" ]; then
+        arg_arch="wasm32"
+    fi
+
+    if [ -n "$arg_suffix" ]; then
+        arg_suffix="-DEXTRA_SUFFIX="$arg_suffix""
     fi
 }
 
 
 __build_cpp_generic() {
     export CMAKE_GENERATOR="Ninja"
-    local args=""
+    local web_args=""
     if [ "$godot_platform" = "web" ]; then
-        args="-DGODOT_ARCH=wasm32 -DCMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DCMAKE_PROJECT_INCLUDE=../godot-cpp/cmake/emsdkHack.cmake"
-    else
+        web_args="--toolchain=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DCMAKE_PROJECT_INCLUDE:FILEPATH=../godot-cpp/cmake/emsdkHack.cmake"
+    elif __string_contain "llvm" "$arg_suffix"; then
         export CC="clang"
         export CXX="clang++"
     fi
-    __call_print cmake -S . -B "build/$godot_platform/$1_$godot_type" -DCMAKE_BUILD_TYPE=GodotConfig -DGODOT_TARGET="$1" -DGODOT_PLATFORM=$godot_platform -DGODOT_TYPE=$godot_type -DEXTRA_SUFFIX="$arg_suffix" $args
+    __call_print cmake -S . -B "build/$godot_platform/$1_$godot_type" -DCMAKE_BUILD_TYPE=GodotConfig -DGODOT_TARGET="$1" -DGODOT_PLATFORM=$godot_platform -DGODOT_TYPE=$godot_type -DGODOT_ARCH=$arg_arch $arg_suffix $web_args ${arg_rest[@]}
     __call_print cmake --build "build/$godot_platform/$1_$godot_type"
 }
 
@@ -176,17 +208,57 @@ __build_cpp() {
     cd ./..
 }
 
+__parse_csharp_args() {
+    __parse_args "$@"
+
+    godot_type="static"
+    if [ "$arg_static" = true ]; then
+        godot_type="static"
+    elif [ "$arg_shared" = true ]; then
+        godot_type="shared"
+    fi
+
+    godot_platform="$arg_platform"
+
+    if [ -z "$arg_arch" ]; then
+        arg_arch="x86_64"
+    fi
+
+    platform_args=""
+    if [ "$godot_platform" = "linuxbsd" ]; then
+        platform_args="-r linux-x64"
+    elif [ "$godot_platform" = "windows" ]; then
+        platform_args="-r win-x64"
+    elif [ "$godot_platform" = "macos" ]; then
+        platform_args="-r osx-x64"
+    elif [ "$godot_platform" = "web" ]; then
+        platform_args="-r browser-wasm"
+        arg_arch="wasm32"
+    fi
+
+    if [ -n "$arg_suffix" ]; then
+        arg_suffix="-p:ExtraSuffix=$arg_suffix"
+    fi
+}
+
+
+__build_csharp_generic() {
+    __call_print dotnet build
+    __call_print dotnet publish -v:d -c "$1" $platform_args -p:GodotType="$godot_type" -p:GodotArch="$arg_arch" $arg_suffix ${arg_rest[@]}
+}
+
 
 __build_csharp_editor() {
-    __call_print dotnet build
+    __parse_csharp_args "$@"
+    __build_csharp_generic Debug
 }
 __build_csharp_template_debug() {
-    __call_print dotnet build
-    __call_print dotnet publish -c ExportDebug -p:LinkLibGodot=true
+    __parse_csharp_args "$@"
+    __build_csharp_generic ExportDebug
 }
 __build_csharp_template_release() {
-    __build_cpp_generic Release template_release
-    __call_print dotnet publish -c ExportRelease -p:LinkLibGodot=true
+    __parse_csharp_args "$@"
+    __build_csharp_generic ExportRelease
 }
 
 
@@ -220,10 +292,42 @@ build() {
 }
 
 
+__run_cpp() {
+    cd ./cpp_project
+    __parse_cpp_args "$@"
+    if ! ls -d ./templates/$godot_platform/editor_$godot_type/editor > /dev/null; then
+        __build_cpp_generic editor
+    fi
+    __call_print ./templates/$godot_platform/editor_$godot_type/editor --editor
+    cd ./..
+}
+
+
+__run_csharp() {
+    cd ./csharp_project
+    __parse_csharp_args "$@"
+    __call_print dotnet run -c Debug $platform_args -p:GodotType=shared -p:GodotArch="$arg_arch" $arg_suffix ${arg_rest[@]}
+    cd ./..
+}
+
+
+start() {
+    if [ "$1" = "cpp" ]; then
+        __run_cpp "${@:2}"
+    elif [ "$1" = "csharp" ]; then
+        __run_csharp "${@:2}"
+    else
+        echo "No target"
+    fi
+}
+
+
 print_help() {
     echo "Available commands:"
-    echo "-bash run build godot [editor|template_debug|template_release] executable|static|shared [mono] [scons args]"
-    echo "-bash run build cpp [static|shared] [suffix=] linuxbsd|windows|macos|web"
+    echo "-bash run build godot [editor|template_debug|template_release] executable|static|shared [mono] [platform=(linuxbsd|windows|macos|web)] [scons args]"
+    echo "-bash run build cpp [static|shared] [editor|template_debug|template_release] [suffix=] [arch=] platform=(linuxbsd|windows|macos|web)"
+    echo "-bash run build csharp [static|shared] [editor|template_debug|template_release] [suffix=] [arch=] platform=(linuxbsd|windows|macos|web)"
+    echo "-bash run -i [command]: will enable interactive mode"
 }
 
 

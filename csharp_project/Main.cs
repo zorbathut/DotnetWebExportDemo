@@ -1,10 +1,10 @@
 
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-// using Godot;
 
 namespace GodotLibGodot;
 
@@ -141,14 +141,13 @@ public class StringName : IDisposable
             destructor = SimpleInterface.variant_get_ptr_destructor(GDExtensionVariantType.StringName);
         }
     }
-    private nint opaque = nint.Zero;
-    public nint Ptr => opaque;
+    public nint Ptr { get; private set; }
 
     public unsafe StringName(string content)
     {
         using AnsiString ansiString = new(content);
-        opaque = Marshal.AllocHGlobal(Unsafe.SizeOf<nint>());
-        Bindings.string_name_new_with_latin1_chars(opaque, ansiString.Ptr, 0);
+        Ptr = Marshal.AllocHGlobal(Unsafe.SizeOf<nint>());
+        Bindings.string_name_new_with_latin1_chars(Ptr, ansiString.Ptr, 0);
     }
 
     ~StringName()
@@ -164,11 +163,11 @@ public class StringName : IDisposable
 
     private unsafe void Dispose(bool _)
     {
-        if (opaque != nint.Zero)
+        if (Ptr != nint.Zero)
         {
-            Bindings.destructor(opaque);
-            Marshal.FreeHGlobal(opaque);
-            opaque = nint.Zero;
+            Bindings.destructor(Ptr);
+            Marshal.FreeHGlobal(Ptr);
+            Ptr = nint.Zero;
         }
     }
 }
@@ -279,25 +278,30 @@ public unsafe static class SimpleInterface
     {
         Console.WriteLine("Inside Initialize");
         library = new(getProcAddress, token);
+        Console.WriteLine("Create library wrapper");
         // variant_get_ptr_constructor = (delegate* unmanaged<GDExtensionVariantType, int, delegate* unmanaged<nint, nint*, void>>)library.LoadFunction("variant_get_ptr_constructor");
         variant_get_ptr_destructor = (delegate* unmanaged<GDExtensionVariantType, delegate* unmanaged<nint, void>>)library.LoadFunction("variant_get_ptr_destructor");
+        Console.WriteLine("Loaded variant_get_ptr_destructor");
         // variant_get_ptr_builtin_method = (delegate* unmanaged<GDExtensionVariantType, nint, long, delegate* unmanaged<nint, nint*, void>>)library.LoadFunction("variant_get_ptr_builtin_method");
         classdb_get_method_bind = (delegate* unmanaged<nint, nint, long, nint>)library.LoadFunction("classdb_get_method_bind");
         object_method_bind_ptrcall = (delegate* unmanaged<nint, nint, nint*, nint, void>)library.LoadFunction("object_method_bind_ptrcall");
+        Console.WriteLine("Loaded object_method_bind_ptrcall");
 
         StringName.Bindings.Initialize();
+        Console.WriteLine("StringName inint");
         GodotInstance.Bindings.Initialize();
+        Console.WriteLine("GodotInstance inint");
     }
 }
 
 
-public static class LibGodot
+public static partial class LibGodot
 {
-    [DllImport("libgodot", EntryPoint = "libgodot_create_godot_instance")]
-    private static unsafe extern nint libgodot_create_godot_instance(int argc, nint* argv, nint initFunc);
+    [LibraryImport("libgodot")]
+    private static unsafe partial nint libgodot_create_godot_instance(int argc, nint* argv, nint initFunc);
 
-    [DllImport("libgodot", EntryPoint = "libgodot_destroy_godot_instance")]
-    private static extern void libgodot_destroy_godot_instance(nint godotInstance);
+    [LibraryImport("libgodot")]
+    private static partial void libgodot_destroy_godot_instance(nint godotInstance);
 
     [UnmanagedCallersOnly]
     private static void Initialize(nint userdata, GDExtensionInitializationLevel level) { }
@@ -350,18 +354,42 @@ public static class LibGodot
 
 internal static partial class Program
 {
-    static int Main()
+    [LibraryImport("libgodot")]
+    private static partial void set_load_from_executable_fn(nint callback);
+
+    [UnmanagedCallersOnly]
+    private static unsafe nint LoadFromExecutable()
+    {
+#if TOOLS
+        // Use builtin dotnet loading for editor
+        return nint.Zero;
+#else
+        return (nint)(delegate* unmanaged<IntPtr, IntPtr, IntPtr, int, Godot.NativeInterop.godot_bool>)&global::GodotPlugins.Game.Main.InitializeFromGameProject;
+#endif
+    }
+
+#if !GODOT_WEB
+    static unsafe int Main()
     {
         Console.WriteLine("LibGodot static main begin");
-        string[] args = Environment.GetCommandLineArgs();
-        var instance = LibGodot.CreateGodotInstance(args);
+        List<string> args = [.. Environment.GetCommandLineArgs()];
+
+        Console.WriteLine($"Environment.CurrentDirectory: {Environment.CurrentDirectory}");
+#if GODOT_BUNDLED_PCK
+        Console.WriteLine($"AppContext.BaseDirectory: {AppContext.BaseDirectory}");
+        args.InsertRange(1, ["--main-pack", $"{AppContext.BaseDirectory}{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.pck"]);
+#endif
+        var instance = LibGodot.CreateGodotInstance([.. args]);
         if (instance is null)
         {
             Console.Error.WriteLine("Error creating Godot instance");
             return 1;
         }
 
+        set_load_from_executable_fn((nint)(delegate* unmanaged<nint>)&LoadFromExecutable);
+
         Console.WriteLine("LibGodot before start");
+
         instance.Start();
 
         Console.WriteLine("LibGodot before first iteration");
@@ -374,4 +402,80 @@ internal static partial class Program
 
         return 0;
     }
+#else
+    [LibraryImport("web_imports")]
+    private static unsafe partial void emscripten_set_main_loop(delegate* unmanaged<void> func, int fps, byte simulate_infinite_loop);
+    [LibraryImport("web_imports")]
+    private static unsafe partial void emscripten_cancel_main_loop();
+    [LibraryImport("web_imports")]
+    private static unsafe partial void emscripten_force_exit(int status);
+    [LibraryImport("web_imports")]
+    private static unsafe partial void* godot_js_emscripten_get_version();
+    [LibraryImport("web_imports")]
+    private static unsafe partial void godot_js_os_finish_async(delegate* unmanaged<void> func);
+
+    private static GodotInstance? instance = null;
+    private static bool shutdownComplete = false;
+
+    [UnmanagedCallersOnly]
+    private static void ExitCallback()
+    {
+        if (!shutdownComplete)
+        {
+            return; // Still waiting.
+        }
+
+        if (instance is not null)
+        {
+            Console.WriteLine("LibGodot before destroy");
+            LibGodot.DestroyGodotInstance(instance);
+            instance = null;
+        }
+
+        emscripten_force_exit(0);
+    }
+
+    [UnmanagedCallersOnly]
+    private static void CleanupAfterSync()
+    {
+        shutdownComplete = true;
+    }
+
+    private unsafe static void MainLoopCallback()
+    {
+        if (instance!.Iteration())
+        {
+            emscripten_cancel_main_loop();
+            emscripten_set_main_loop(&ExitCallback, -1, 0);
+            godot_js_os_finish_async(&CleanupAfterSync);
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    private static void MainLoopCallbackUnmanaged()
+    {
+        MainLoopCallback();
+    }
+
+    static unsafe int Main()
+    {
+        Console.WriteLine("LibGodot web main begin");
+        List<string> args = [.. Environment.GetCommandLineArgs()];
+        instance = LibGodot.CreateGodotInstance([.. args]);
+        if (instance is null)
+        {
+            Console.Error.WriteLine("Error creating Godot instance");
+            return 1;
+        }
+        set_load_from_executable_fn((nint)(delegate* unmanaged<nint>)&LoadFromExecutable);
+        Console.WriteLine("LibGodot before start");
+        instance.Start();
+        Console.WriteLine("LibGodot start");
+
+        emscripten_set_main_loop(&MainLoopCallbackUnmanaged, -1, 0);
+        MainLoopCallback();
+        return 0;
+    }
+
+#endif
 }

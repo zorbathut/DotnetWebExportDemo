@@ -1,49 +1,166 @@
 <Project Sdk="Godot.NET.Sdk/4.7.0-dev">
-  <PropertyGroup>
-    <AssemblyName>CSharpSample</AssemblyName>
-    <TargetFramework>net10.0</TargetFramework>
-    <EnableDynamicLoading>true</EnableDynamicLoading>
-    <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-  </PropertyGroup>
 
-  <PropertyGroup Condition="$(LinkLibGodot) == 'true'">
-    <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
-    <OutputType>exe</OutputType>
-    <EnableDynamicLoading>false</EnableDynamicLoading>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <PropertyGroup>
+        <AssemblyName>CSharpSample</AssemblyName>
+        <TargetFramework>net10.0</TargetFramework>
+        <EnableDynamicLoading>true</EnableDynamicLoading>
+        <Nullable>enable</Nullable>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    </PropertyGroup>
 
-    <PublishAOT>true</PublishAOT>
-    <PublishAotUsingRuntimePack>true</PublishAotUsingRuntimePack>
-    <UseNativeAOTRuntime>true</UseNativeAOTRuntime>
-    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <PropertyGroup Condition="$(GodotType) != ''">
+        <OutputType>exe</OutputType>
+        <EnableDynamicLoading>false</EnableDynamicLoading>
+        <InvariantGlobalization>true</InvariantGlobalization>
 
-    <CppCompilerAndLinker>clang++</CppCompilerAndLinker>
-    <LinkerFlavor>lld</LinkerFlavor>
-    <LinkStandardCPlusPlusLibrary>true</LinkStandardCPlusPlusLibrary>
-  </PropertyGroup>
+        <LibGodotBuildDir>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)/../godot/bin'))</LibGodotBuildDir>
 
-  <ItemGroup Condition="$(LinkLibGodot) == 'true'">
-    <!-- Root the assemblies to avoid trimming. -->
-    <TrimmerRootAssembly Include="GodotSharp" />
-    <TrimmerRootAssembly Include="$(TargetName)" />
+        <GodotTarget Condition="'$(Configuration)' == 'Debug'" >editor</GodotTarget>
+        <GodotTarget Condition="'$(Configuration)' == 'ExportDebug'" >template_debug</GodotTarget>
+        <GodotTarget Condition="'$(Configuration)' == 'ExportRelease'">template_release</GodotTarget>
+        <Optimize Condition="'$(Configuration)' == 'Debug'" >true</Optimize>
 
-    <DirectPInvoke Include="libgodot" />
-    <NativeLibrary Include="$(MSBuildProjectDirectory)/../godot/bin/libgodot.linuxbsd.template_debug.x86_64.llvm.static.mono.a" Condition=" $(RuntimeIdentifier.StartsWith('linux')) And '$(Configuration)' == 'ExportDebug' " />
-    <NativeLibrary Include="$(MSBuildProjectDirectory)/../godot/bin/libgodot.linuxbsd.template_release.x86_64.llvm.static.mono.a" Condition=" $(RuntimeIdentifier.StartsWith('linux')) And '$(Configuration)' == 'ExportRelease' " />
-    
-    <!-- I could only link them with allow-multiple-definition, the error I got was about multiple existing symbols for -->
-    <!-- vtable "Object", I guess Godot's Object and C#'s Object has the same name even in symbol map -->
-    <!-- put godot's Object in namespace for now -->
-    <!-- <LinkerArg Include="-Wl,- -allow-multiple-definition" Condition="$(RuntimeIdentifier.StartsWith('linux'))" /> -->
-    <LinkerArg Include="-static-libstdc++ -static-libgcc" />
-  </ItemGroup>
+        <GodotExtraSuffix Condition="$(ExtraSuffix) == ''"></GodotExtraSuffix>
+        <GodotExtraSuffix Condition="$(ExtraSuffix) != ''">$(ExtraSuffix).</GodotExtraSuffix>
 
+        <GodotConfigSuffix>$(GodotExtraSuffix)$(GodotType).mono.configure.props</GodotConfigSuffix>
 
-  <Target Name="CopyFiles" AfterTargets="Publish" Condition="$(LinkLibGodot) == 'true'">
-    <ItemGroup>
-      <MyDistFiles Include="$(PublishDir)/**" />
+        <GodotPlatformSuffix Condition="$(GodotTargetPlatform) == 'linuxbsd' And $(GodotType) == 'static'">a</GodotPlatformSuffix>
+        <GodotPlatformSuffix Condition="$(GodotTargetPlatform) == 'linuxbsd' And $(GodotType) == 'shared'">so</GodotPlatformSuffix>
+        <GodotPlatformSuffix Condition="$(GodotTargetPlatform) == 'windows' And $(GodotType) == 'static'">lib</GodotPlatformSuffix>
+        <GodotPlatformSuffix Condition="$(GodotTargetPlatform) == 'windows' And $(GodotType) == 'shared'">dll</GodotPlatformSuffix>
+        <GodotPlatformSuffix Condition="$(GodotTargetPlatform) == 'macos' And $(GodotType) == 'static'">a</GodotPlatformSuffix>
+        <GodotPlatformSuffix Condition="$(GodotTargetPlatform) == 'macos' And $(GodotType) == 'shared'">dylib</GodotPlatformSuffix>
+        <GodotPlatformSuffix Condition="$(GodotTargetPlatform) == 'web' And $(GodotType) == 'static'">a</GodotPlatformSuffix>
+        <GodotPlatformSuffix Condition="$(GodotTargetPlatform) == 'web' And $(GodotType) == 'shared'">wasm</GodotPlatformSuffix>
+
+        <GodotSuffix>$(GodotExtraSuffix)$(GodotType).mono.$(GodotPlatformSuffix)</GodotSuffix>
+
+        <!-- Linux only for testing -->
+        <BundlePackage>false</BundlePackage>
+        <BundlePackage Condition="$(GodotTarget) != 'editor' And $(GodotType) == 'shared' And $(GodotTargetPlatform) == 'linuxbsd'">true</BundlePackage>
+    </PropertyGroup>
+
+    <Import Project="$(LibGodotBuildDir)libgodot.$(GodotTargetPlatform).$(GodotTarget).$(GodotArch).$(GodotConfigSuffix)" Condition="'$(GodotType)' != ''" />
+
+    <PropertyGroup Condition="$(GodotType) == 'static' And $(GodotTargetPlatform) != 'web'">
+        <PublishAOT>true</PublishAOT>
+        <PublishAotUsingRuntimePack>true</PublishAotUsingRuntimePack>
+        <UseNativeAOTRuntime>true</UseNativeAOTRuntime>
+        <TrimmerSingleWarn>false</TrimmerSingleWarn>
+
+        <CppCompilerAndLinker Condition="$(ExtraSuffix.Contains('llvm'))">clang++</CppCompilerAndLinker>
+        <LinkerFlavor Condition="$(ExtraSuffix.Contains('llvm'))">lld</LinkerFlavor>
+        <LinkStandardCPlusPlusLibrary>true</LinkStandardCPlusPlusLibrary>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="$(GodotType) == 'shared' And $(GodotTargetPlatform) != 'web'">
+        <PublishSingleFile>true</PublishSingleFile>
+        <SelfContained>true</SelfContained>
+        <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+        <IncludeAllContentForSelfExtract Condition="$(BundlePackage)">true</IncludeAllContentForSelfExtract>
+        <DefineConstants Condition="$(BundlePackage)">$(DefineConstants);GODOT_BUNDLED_PCK</DefineConstants>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="$(GodotType) != '' And $(GodotTargetPlatform) == 'web'">
+        <WasmBuildNative>true</WasmBuildNative>
+        <!-- <EmccFlags Condition="$(GodotType) == 'shared'">$(EmccFlags) -sMAIN_MODULE=2</EmccFlags> -->
+        <!-- <EmccExtraLDFlags>$(GODOT_LINKFLAGS.Replace("-sEXPORT_NAME='Godot'", "").Replace('-sMODULARIZE=1', '').Replace("-sSUPPORT_LONGJMP='wasm'", '').Replace('-sEXPORTED_FUNCTIONS=_malloc,_free -sEXPORTED_RUNTIME_METHODS=callMain,cwrap,HEAP8,HEAPU8,HEAP16,HEAPU16,HEAP32,HEAPU32,HEAP64,HEAPU64,HEAPF32,HEAPF64 -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=$MainLoop', ''))</EmccExtraLDFlags> -->
+        <EmccExtraLDFlags>$(EmccExtraLDFlags.Replace("-sMODULARIZE=1 -sEXPORT_NAME='Godot' -sSUPPORT_LONGJMP='wasm'", "")) </EmccExtraLDFlags>
+        <!-- <EmccExtraLDFlags>$(EmccExtraLDFlags) -lwebgl.js</EmccExtraLDFlags> -->
+        <!-- <EmccExtraCFlags>$(GODOT_CFLAGS) $(GODOT_CCFLAGS)</EmccExtraCFlags> -->
+        <WasmEnableThreads>$(GODOT_THREADS)</WasmEnableThreads>
+        <WasmCachePath>$(IntermediateOutputPath)/em_cache/</WasmCachePath>
+        <!-- <WasmAllowUndefinedSymbols>true</WasmAllowUndefinedSymbols> -->
+        <WasmEnableExceptionHandling>false</WasmEnableExceptionHandling>
+        <!-- <RunAOTCompilation>true</RunAOTCompilation> -->
+    </PropertyGroup>
+
+    <ItemGroup Condition="$(GodotType) != ''">
+        <Content Include="$(LibGodotBuildDir)libgodot.$(GodotTargetPlatform).$(GodotTarget).$(GodotArch).$(GodotSuffix)" >
+            <Link>libgodot.$(GodotPlatformSuffix)</Link>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+            <CopyToPublishDirectory Condition="$(GodotType) == 'static'">Never</CopyToPublishDirectory>
+            <ExcludeFromSingleFile Condition="$(GodotType) == 'static'">true</ExcludeFromSingleFile>
+        </Content>
+
+        <None Include="$(LibGodotBuildDir)GodotSharp/**" Condition="$(GodotTarget) == 'editor'" >
+            <LinkBase>GodotSharp\</LinkBase>
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+            <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+        </None>
+
+        <NativeFileReference Include="web_imports.c" Condition="$(GodotTargetPlatform) == 'web'" />
+
+        <EmccExportedFunction Include="$(GODOT_EMCC_EXPORTED_FUNCTIONS)" Condition="$(GODOT_EMCC_EXPORTED_FUNCTIONS) != ''" />
+        <EmccExportedRuntimeMethod Include="$(GODOT_EMCC_EXPORTED_RUNTIME_METHODS)" Condition="$(GODOT_EMCC_EXPORTED_RUNTIME_METHODS) != ''" />
+        <EmccExportedLibraryFunction Include="$(GODOT_EMCC_DEFAULT_LIBRARY_FUNCS_TO_INCLUDE)" Condition="$(GODOT_EMCC_DEFAULT_LIBRARY_FUNCS_TO_INCLUDE) != ''" />
+
+        <JSFileType Include="$(GODOT_EMCC_JS_PRE)" Kind="pre-js" Condition="$(GODOT_EMCC_JS_PRE) != ''" />
+        <JSFileType Include="$(GODOT_EMCC_JS_LIBRARIES)" Kind="js-library" Condition="$(GODOT_EMCC_JS_LIBRARIES) != ''" />
+        <JSFileType Include="$(GODOT_EMCC_JS_POST)" Kind="post-js" Condition="$(GODOT_EMCC_JS_POST) != ''" />
     </ItemGroup>
-    <Copy SourceFiles="@(MyDistFiles)" DestinationFolder="$(MSBuildProjectDirectory)/templates/$(Configuration)" />
-  </Target>
+
+    <ItemGroup Condition="$(GodotType) == 'static'">
+        <TrimmerRootAssembly Include="GodotSharp" />
+        <TrimmerRootAssembly Include="$(TargetName)" />
+
+        <DirectPInvoke Include="libgodot" />
+        <NativeLibrary Include="$(OutputPath)libgodot.$(GodotPlatformSuffix)" />
+
+        <GodotLibs Include="$(GODOT_LIBS)" />
+        <LinkerArg Include="@(GodotLibs -> '-l%(Identity)')" Condition="$(GodotTargetPlatform) != 'windows'" />
+        <!-- args for windows? -->
+
+        <!-- I could only link them with allow-multiple-definition, the error I got was about multiple existing symbols for -->
+        <!-- vtable "Object", I guess Godot's Object and C#'s Object has the same name even in symbol map -->
+        <!-- For now put godot's Object in a namespace -->
+        <!-- <LinkerArg Include="-Wl,- -allow-multiple-definition" Condition="$(RuntimeIdentifier.StartsWith('linux'))" /> -->
+        <LinkerArg Include="$(GODOT_LINKFLAGS)" Condition="$(GodotTargetPlatform) != 'web'" />
+    </ItemGroup>
+
+    <Target Name="GodotBundlePackage" BeforeTargets="GenerateSingleFileBundle" DependsOnTargets="PrepareForBundle" Condition="$(BundlePackage)">
+        <PropertyGroup>
+            <ExeSuffix>$(GodotExtraSuffix)executable.mono</ExeSuffix>
+            <ExeSuffix Condition="$(GodotTargetPlatform) == 'windows'">$(ExeSuffix).exe</ExeSuffix>
+        </PropertyGroup>
+
+        <MakeDir Directories="$(MSBuildProjectDirectory)/export/linux_pck" />
+
+        <Exec Command="$(LibGodotBuildDir)godot.$(GodotTargetPlatform).editor.$(GodotArch).$(ExeSuffix) --export-pack LinuxPck export/linux_pck/$(AssemblyName).pck --headless" ConsoleToMSBuild="true" WorkingDirectory="$(MSBuildProjectDirectory)">
+            <Output TaskParameter="ConsoleOutput" PropertyName="OutputOfExec" />
+        </Exec>
+
+        <ItemGroup>
+            <GodotPck Include="$(MSBuildProjectDirectory)/export/linux_pck/$(AssemblyName).pck" />
+            <!-- Add metadata for the relative path for GenerateBundle -->
+            <GodotPck RelativePath="$(AssemblyName).pck" />
+        </ItemGroup>
+        <ItemGroup>
+            <FilesToBundle Include="@(GodotPck)" />
+        </ItemGroup>
+    </Target>
+
+    <Target Name="CopyFiles" AfterTargets="Publish" Condition="$(GodotType) != '' And $(GodotTargetPlatform) != 'web'">
+        <ItemGroup>
+            <MyDistFiles Include="$(PublishDir)/**" />
+        </ItemGroup>
+        <Copy SourceFiles="@(MyDistFiles)" DestinationFolder="$(MSBuildProjectDirectory)/templates/$(GodotTargetPlatform)/$(GodotTarget)_$(GodotType)/%(RecursiveDir)"  />
+    </Target>
+
+    <Target Name="BuildZip" AfterTargets="Publish" Condition="$(GodotType) != '' And $(GodotTargetPlatform) == 'web'">
+        <PropertyGroup>
+            <ZipSuffix>$(GodotExtraSuffix)$(GodotType).mono.zip</ZipSuffix>
+            <GodotWebZip>$(LibGodotBuildDir)godot.$(GodotTargetPlatform).$(GodotTarget).$(GodotArch).$(ZipSuffix)</GodotWebZip>
+        </PropertyGroup>
+
+        <RemoveDir Directories="$(IntermediateOutputPath)/web_template" />
+
+        <Unzip
+            SourceFiles="$(GodotWebZip)"
+            DestinationFolder="$(IntermediateOutputPath)/web_template" />
+
+        <!-- ZipDirectory -->
+    </Target>
+
 </Project>

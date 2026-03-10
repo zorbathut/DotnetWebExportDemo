@@ -1,13 +1,19 @@
-
-
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
+#if GODOT_WEB
+using System.Runtime.InteropServices.JavaScript;
+// Silence web build warnings for [JSImport]/[JSExport]
+[assembly: System.Runtime.Versioning.SupportedOSPlatform("browser")]
+#endif
+
 namespace GodotLibGodot;
 
+// Wrapper for Marshal.StringToHGlobalAnsi/Marshal.FreeHGlobal
 public sealed class AnsiString : IDisposable
 {
     public nint Ptr { get; private set; } = nint.Zero;
@@ -21,7 +27,6 @@ public sealed class AnsiString : IDisposable
     {
         Dispose(false);
     }
-
     public void Dispose()
     {
         Dispose(true);
@@ -62,6 +67,7 @@ public unsafe class GodotLibrary
     {
         using AnsiString ansiName = new(name);
         nint fnPtr = GetProcAddressDelegate(ansiName);
+        Console.WriteLine($"Loaded {name}");
         return fnPtr;
     }
 }
@@ -130,7 +136,7 @@ public unsafe struct GDExtensionInitialization
 
 public class StringName : IDisposable
 {
-    public unsafe static class Bindings
+    private unsafe static class Bindings
     {
         public static delegate* unmanaged<nint, nint, byte, void> string_name_new_with_latin1_chars;
         public static delegate* unmanaged<nint, void> destructor;
@@ -170,11 +176,23 @@ public class StringName : IDisposable
             Ptr = nint.Zero;
         }
     }
+
+    public static void InitializeBindings()
+    {
+        Bindings.Initialize();
+    }
 }
 
-public unsafe class GodotInstance
+// GodotInstance implementation
+public unsafe partial class GodotInstance : IDisposable
 {
-    public static class Bindings
+    // Import LibGodot functions
+    [LibraryImport("libgodot")]
+    private static partial nint libgodot_create_godot_instance(int argc, nint* argv, nint initFunc);
+    [LibraryImport("libgodot")]
+    private static partial void libgodot_destroy_godot_instance(nint godotInstance);
+
+    private static class Bindings
     {
         public static nint mbStart;
         public static nint mbIsStarted;
@@ -189,34 +207,89 @@ public unsafe class GodotInstance
             using StringName nativeName = new("GodotInstance");
 
             using StringName startName = new("start");
-            mbStart = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, startName.Ptr, 2240911060);
+            Console.WriteLine("GodotInstance before start");
+            mbStart = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, startName.Ptr, 2240911060L);
 
             using StringName isStartedName = new("is_started");
-            mbIsStarted = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, isStartedName.Ptr, 2240911060);
+            Console.WriteLine("GodotInstance before is_started");
+            mbIsStarted = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, isStartedName.Ptr, 2240911060L);
 
             using StringName iteratiomName = new("iteration");
-            mbIteration = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, iteratiomName.Ptr, 2240911060);
+            Console.WriteLine("GodotInstance before iteration");
+            mbIteration = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, iteratiomName.Ptr, 2240911060L);
 
             using StringName focusInName = new("focus_in");
-            mbFocusIn = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, focusInName.Ptr, 3218959716);
+            Console.WriteLine("GodotInstance before focus_in");
+            mbFocusIn = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, focusInName.Ptr, 3218959716L);
 
             using StringName focusOutName = new("focus_out");
-            mbFocusOut = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, focusOutName.Ptr, 3218959716);
+            Console.WriteLine("GodotInstance before focus_out");
+            mbFocusOut = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, focusOutName.Ptr, 3218959716L);
 
             using StringName pauseName = new("pause");
-            mbPause = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, pauseName.Ptr, 3218959716);
+            Console.WriteLine("GodotInstance before pause");
+            mbPause = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, pauseName.Ptr, 3218959716L);
 
             using StringName resumeName = new("resume");
-            mbResume = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, resumeName.Ptr, 3218959716);
+            Console.WriteLine("GodotInstance before resume");
+            mbResume = SimpleInterface.classdb_get_method_bind(nativeName.Ptr, resumeName.Ptr, 3218959716L);
         }
     }
 
-    private readonly nint owner = nint.Zero;
-    public nint Owner => owner;
+    private nint owner;
 
-    public GodotInstance(nint owner)
+    private GodotInstance(nint owner)
     {
         this.owner = owner;
+    }
+
+    public static GodotInstance? CreateInstance(string[] args, delegate* unmanaged<nint, nint, GDExtensionInitialization*, byte> gdExtensionInit)
+    {
+        AnsiString[] argsAnsi = [.. args.Select(arg => new AnsiString(arg))];
+        nint[] argsPtrs = [.. argsAnsi.Select(arg => arg.Ptr)];
+        try
+        {
+            fixed (nint* argsBegin = argsPtrs)
+            {
+                Console.WriteLine($"Before libgodot_create_godot_instance {argsPtrs.Length}");
+                nint instance = libgodot_create_godot_instance(argsPtrs.Length, argsBegin, (nint)gdExtensionInit);
+                Console.WriteLine("After libgodot_create_godot_instance");
+                if (instance == nint.Zero) { return null; }
+                return new GodotInstance(instance);
+            }
+        }
+        finally
+        {
+            foreach (var arg in argsAnsi)
+            {
+                arg.Dispose();
+            }
+        }
+    }
+
+    ~GodotInstance()
+    {
+        Dispose(false);
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    private void Dispose(bool _)
+    {
+        if (owner != nint.Zero)
+        {
+            libgodot_destroy_godot_instance(owner);
+            owner = nint.Zero;
+        }
+    }
+
+    public static void InitializeBindings()
+    {
+        Bindings.Initialize();
     }
 
     public bool Start()
@@ -262,47 +335,36 @@ public unsafe class GodotInstance
     }
 }
 
-
+// Simple GDExtension interface. Loads only what is needed for GodotInstance
 public unsafe static class SimpleInterface
 {
     private static GodotLibrary? library = null;
     public static GodotLibrary Library => library ?? throw new NullReferenceException(nameof(library));
 
-    // public static delegate* unmanaged<GDExtensionVariantType, int, delegate* unmanaged<nint, nint*, void>> variant_get_ptr_constructor;
     public static delegate* unmanaged<GDExtensionVariantType, delegate* unmanaged<nint, void>> variant_get_ptr_destructor;
-    // public static delegate* unmanaged<GDExtensionVariantType, nint, long, delegate* unmanaged<nint, nint*, void>> variant_get_ptr_builtin_method;
     public static delegate* unmanaged<nint, nint, long, nint> classdb_get_method_bind;
     public static delegate* unmanaged<nint, nint, nint*, nint, void> object_method_bind_ptrcall;
 
     public static void Initialize(nint getProcAddress, nint token)
     {
-        Console.WriteLine("Inside Initialize");
+        Console.WriteLine("Inside SimpleInterface.Initialize");
         library = new(getProcAddress, token);
         Console.WriteLine("Create library wrapper");
-        // variant_get_ptr_constructor = (delegate* unmanaged<GDExtensionVariantType, int, delegate* unmanaged<nint, nint*, void>>)library.LoadFunction("variant_get_ptr_constructor");
         variant_get_ptr_destructor = (delegate* unmanaged<GDExtensionVariantType, delegate* unmanaged<nint, void>>)library.LoadFunction("variant_get_ptr_destructor");
-        Console.WriteLine("Loaded variant_get_ptr_destructor");
-        // variant_get_ptr_builtin_method = (delegate* unmanaged<GDExtensionVariantType, nint, long, delegate* unmanaged<nint, nint*, void>>)library.LoadFunction("variant_get_ptr_builtin_method");
         classdb_get_method_bind = (delegate* unmanaged<nint, nint, long, nint>)library.LoadFunction("classdb_get_method_bind");
         object_method_bind_ptrcall = (delegate* unmanaged<nint, nint, nint*, nint, void>)library.LoadFunction("object_method_bind_ptrcall");
-        Console.WriteLine("Loaded object_method_bind_ptrcall");
 
-        StringName.Bindings.Initialize();
-        Console.WriteLine("StringName inint");
-        GodotInstance.Bindings.Initialize();
-        Console.WriteLine("GodotInstance inint");
+        StringName.InitializeBindings();
+        Console.WriteLine("StringName after init");
+
+        GodotInstance.InitializeBindings();
+        Console.WriteLine("GodotInstance after init");
     }
 }
 
-
+// GDExtensions related init
 public static partial class LibGodot
 {
-    [LibraryImport("libgodot")]
-    private static unsafe partial nint libgodot_create_godot_instance(int argc, nint* argv, nint initFunc);
-
-    [LibraryImport("libgodot")]
-    private static partial void libgodot_destroy_godot_instance(nint godotInstance);
-
     [UnmanagedCallersOnly]
     private static void Initialize(nint userdata, GDExtensionInitializationLevel level) { }
 
@@ -324,46 +386,26 @@ public static partial class LibGodot
 
     public static unsafe GodotInstance? CreateGodotInstance(string[] args)
     {
-        AnsiString[] argsAnsi = [.. args.Select(arg => new AnsiString(arg))];
-        nint[] argsPtrs = [.. argsAnsi.Select(arg => arg.Ptr)];
-        try
-        {
-            fixed (nint* argsBegin = argsPtrs)
-            {
-                Console.WriteLine($"Before libgodot_create_godot_instance {argsPtrs.Length}");
-                nint instance = libgodot_create_godot_instance(argsPtrs.Length, argsBegin, (nint)(delegate* unmanaged<nint, nint, GDExtensionInitialization*, byte>)&GDExtensionInit);
-                Console.WriteLine("After libgodot_create_godot_instance");
-                if (instance == nint.Zero) { return null; }
-                return new GodotInstance(instance);
-            }
-        }
-        finally
-        {
-            foreach (var arg in argsAnsi)
-            {
-                arg.Dispose();
-            }
-        }
-    }
-
-    public static void DestroyGodotInstance(GodotInstance instance)
-    {
-        libgodot_destroy_godot_instance(instance.Owner);
+        return GodotInstance.CreateInstance(args, &GDExtensionInit);
     }
 }
 
 internal static partial class Program
 {
+    // Set initialization getter, it needs to be this roundabout for godot as dll to work.
+    // Static library could access [UnmanagedCallersOnly] with entry point directly.
     [LibraryImport("libgodot")]
     private static partial void set_load_from_executable_fn(nint callback);
 
     [UnmanagedCallersOnly]
     private static unsafe nint LoadFromExecutable()
     {
+        Console.WriteLine("LoadFromExecutable called");
 #if TOOLS
         // Use builtin dotnet loading for editor
         return nint.Zero;
 #else
+        // Use Native AOT loader for export builds
         return (nint)(delegate* unmanaged<IntPtr, IntPtr, IntPtr, int, Godot.NativeInterop.godot_bool>)&global::GodotPlugins.Game.Main.InitializeFromGameProject;
 #endif
     }
@@ -376,6 +418,8 @@ internal static partial class Program
 
         Console.WriteLine($"Environment.CurrentDirectory: {Environment.CurrentDirectory}");
 #if GODOT_BUNDLED_PCK
+        // Test <PublishSingleFile /> with included .pck file.
+        // Works but kind of jank.
         Console.WriteLine($"AppContext.BaseDirectory: {AppContext.BaseDirectory}");
         args.InsertRange(1, ["--main-pack", $"{AppContext.BaseDirectory}{System.Reflection.Assembly.GetExecutingAssembly().GetName().Name}.pck"]);
 #endif
@@ -393,26 +437,42 @@ internal static partial class Program
         instance.Start();
 
         Console.WriteLine("LibGodot before first iteration");
-        while (!instance.Iteration())
-        {
-        }
+        while (!instance.Iteration()) { }
 
         Console.WriteLine("LibGodot before destroy");
-        LibGodot.DestroyGodotInstance(instance);
+        instance.Dispose();
 
         return 0;
     }
-#else
-    [LibraryImport("web_imports")]
-    private static unsafe partial void emscripten_set_main_loop(delegate* unmanaged<void> func, int fps, byte simulate_infinite_loop);
-    [LibraryImport("web_imports")]
-    private static unsafe partial void emscripten_cancel_main_loop();
-    [LibraryImport("web_imports")]
-    private static unsafe partial void emscripten_force_exit(int status);
-    [LibraryImport("web_imports")]
-    private static unsafe partial void* godot_js_emscripten_get_version();
-    [LibraryImport("web_imports")]
-    private static unsafe partial void godot_js_os_finish_async(delegate* unmanaged<void> func);
+
+#else // GODOT_WEB
+
+    // Load emscriptens functions
+    [DllImport("*")]
+    private static extern void emscripten_set_main_loop(nint func, int fps, byte simulate_infinite_loop);
+    [DllImport("*")]
+    private static extern byte emscripten_is_main_browser_thread();
+    [DllImport("*")]
+    private static extern void emscripten_cancel_main_loop();
+    [DllImport("*")]
+    private static extern void emscripten_force_exit(int status);
+
+    // Load godot js libraries
+    [DllImport("*")]
+    private static unsafe extern void* godot_js_emscripten_get_version();
+    [DllImport("*")]
+    private static unsafe extern void godot_js_os_finish_async(nint func);
+
+    // Custom web iteration
+    [LibraryImport("libgodot")]
+    private static partial byte web_iteration();
+
+    // Generate web trampolines
+    // C# doesnt't automatically generate them if long or ulong is used as a parameter type
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate nint classdb_get_method_bind_sig(nint _1, nint _2, long _3);
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate IntPtr godotsharp_instance_from_id_sig(ulong _1);
 
     private static GodotInstance? instance = null;
     private static bool shutdownComplete = false;
@@ -428,7 +488,7 @@ internal static partial class Program
         if (instance is not null)
         {
             Console.WriteLine("LibGodot before destroy");
-            LibGodot.DestroyGodotInstance(instance);
+            instance.Dispose();
             instance = null;
         }
 
@@ -441,24 +501,30 @@ internal static partial class Program
         shutdownComplete = true;
     }
 
-    private unsafe static void MainLoopCallback()
+    private static unsafe void SetupExit()
     {
-        if (instance!.Iteration())
-        {
-            emscripten_cancel_main_loop();
-            emscripten_set_main_loop(&ExitCallback, -1, 0);
-            godot_js_os_finish_async(&CleanupAfterSync);
-        }
+        emscripten_cancel_main_loop();
+        emscripten_set_main_loop((nint)(delegate* unmanaged<void>)&ExitCallback, -1, 0);
+        godot_js_os_finish_async((nint)(delegate* unmanaged<void>)&CleanupAfterSync);
     }
 
+
     [UnmanagedCallersOnly]
-    private static void MainLoopCallbackUnmanaged()
+    private static void MainLoopCallback()
     {
-        MainLoopCallback();
+        if (web_iteration() != 0)
+        {
+            SetupExit();
+        }
     }
 
     static unsafe int Main()
     {
+        // Checking that we are not in the actual browser thread inside multithreaded main.
+        // This makes it similar to enabled PROXY_TO_PTHREAD, which godot supports, so it's fine.
+        // The only bad thing is that there is no automatic support for transferring offscreen canvas
+        // to this main thread, which leads to a hack that adds support for it.
+        Console.WriteLine($"LibGodot is main browser thread: {emscripten_is_main_browser_thread() != 0}");
         Console.WriteLine("LibGodot web main begin");
         List<string> args = [.. Environment.GetCommandLineArgs()];
         instance = LibGodot.CreateGodotInstance([.. args]);
@@ -467,15 +533,23 @@ internal static partial class Program
             Console.Error.WriteLine("Error creating Godot instance");
             return 1;
         }
+
         set_load_from_executable_fn((nint)(delegate* unmanaged<nint>)&LoadFromExecutable);
-        Console.WriteLine("LibGodot before start");
-        instance.Start();
-        Console.WriteLine("LibGodot start");
+        Console.WriteLine("LibGodot web before start");
 
-        emscripten_set_main_loop(&MainLoopCallbackUnmanaged, -1, 0);
-        MainLoopCallback();
-        return 0;
+        instance!.Start();
+        Console.WriteLine("LibGodot web start");
+
+        emscripten_set_main_loop((nint)(delegate* unmanaged<void>)&MainLoopCallback, -1, 0);
+
+        Console.WriteLine("LibGodot before first iteration");
+        if (web_iteration() != 0)
+        {
+            SetupExit();
+            return 0;
+        }
+
+        return 0;    
     }
-
 #endif
 }

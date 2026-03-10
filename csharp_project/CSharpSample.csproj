@@ -18,10 +18,13 @@
         <GodotTarget Condition="'$(Configuration)' == 'Debug'" >editor</GodotTarget>
         <GodotTarget Condition="'$(Configuration)' == 'ExportDebug'" >template_debug</GodotTarget>
         <GodotTarget Condition="'$(Configuration)' == 'ExportRelease'">template_release</GodotTarget>
+        <!-- Faster build for editor -->
         <Optimize Condition="'$(Configuration)' == 'Debug'" >true</Optimize>
 
+        <AppendArch>true</AppendArch>
         <GodotExtraSuffix Condition="$(ExtraSuffix) == ''"></GodotExtraSuffix>
         <GodotExtraSuffix Condition="$(ExtraSuffix) != ''">$(ExtraSuffix).</GodotExtraSuffix>
+        <GodotExtraSuffix Condition="$(AppendArch) == 'true'">$(GodotArch).$(GodotExtraSuffix)</GodotExtraSuffix>
 
         <GodotConfigSuffix>$(GodotExtraSuffix)$(GodotType).mono.configure.props</GodotConfigSuffix>
 
@@ -36,13 +39,18 @@
 
         <GodotSuffix>$(GodotExtraSuffix)$(GodotType).mono.$(GodotPlatformSuffix)</GodotSuffix>
 
-        <!-- Linux only for testing -->
+        <!-- Bundle .pck file with PublishSingleFile. Linux only for testing -->
         <BundlePackage>false</BundlePackage>
         <BundlePackage Condition="$(GodotTarget) != 'editor' And $(GodotType) == 'shared' And $(GodotTargetPlatform) == 'linuxbsd'">true</BundlePackage>
+
+        <GodotLibraryName>libgodot</GodotLibraryName>
+        <GodotLibraryName Condition="$(GodotTargetPlatform) == 'web' And $(GodotType) == 'shared'">godot.side</GodotLibraryName>
     </PropertyGroup>
 
-    <Import Project="$(LibGodotBuildDir)libgodot.$(GodotTargetPlatform).$(GodotTarget).$(GodotArch).$(GodotConfigSuffix)" Condition="'$(GodotType)' != ''" />
+    <!-- Import created in add_configuration_file .props file -->
+    <Import Project="$(LibGodotBuildDir)libgodot.$(GodotTargetPlatform).$(GodotTarget).$(GodotConfigSuffix)" Condition="'$(GodotType)' != ''" />
 
+    <!-- On PC builds static library only works only with AOT -->
     <PropertyGroup Condition="$(GodotType) == 'static' And $(GodotTargetPlatform) != 'web'">
         <PublishAOT>true</PublishAOT>
         <PublishAotUsingRuntimePack>true</PublishAotUsingRuntimePack>
@@ -54,6 +62,8 @@
         <LinkStandardCPlusPlusLibrary>true</LinkStandardCPlusPlusLibrary>
     </PropertyGroup>
 
+    <!-- On linux at least shared library works in both versions, but in Windows for AOT you would also need -->
+    <!-- to link import .lib library for .dll -->
     <PropertyGroup Condition="$(GodotType) == 'shared' And $(GodotTargetPlatform) != 'web'">
         <PublishSingleFile>true</PublishSingleFile>
         <SelfContained>true</SelfContained>
@@ -62,96 +72,159 @@
         <DefineConstants Condition="$(BundlePackage)">$(DefineConstants);GODOT_BUNDLED_PCK</DefineConstants>
     </PropertyGroup>
 
+    <!-- Works both with AOT and not? -->
     <PropertyGroup Condition="$(GodotType) != '' And $(GodotTargetPlatform) == 'web'">
+        <!-- Required -->
         <WasmBuildNative>true</WasmBuildNative>
+        <WasmAllowUndefinedSymbols>true</WasmAllowUndefinedSymbols>
+
+        <!-- MAIN_MODULE doesn't work -->
         <!-- <EmccFlags Condition="$(GodotType) == 'shared'">$(EmccFlags) -sMAIN_MODULE=2</EmccFlags> -->
-        <!-- <EmccExtraLDFlags>$(GODOT_LINKFLAGS.Replace("-sEXPORT_NAME='Godot'", "").Replace('-sMODULARIZE=1', '').Replace("-sSUPPORT_LONGJMP='wasm'", '').Replace('-sEXPORTED_FUNCTIONS=_malloc,_free -sEXPORTED_RUNTIME_METHODS=callMain,cwrap,HEAP8,HEAPU8,HEAP16,HEAPU16,HEAP32,HEAPU32,HEAP64,HEAPU64,HEAPF32,HEAPF64 -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=$MainLoop', ''))</EmccExtraLDFlags> -->
-        <EmccExtraLDFlags>$(EmccExtraLDFlags.Replace("-sMODULARIZE=1 -sEXPORT_NAME='Godot' -sSUPPORT_LONGJMP='wasm'", "")) </EmccExtraLDFlags>
-        <!-- <EmccExtraLDFlags>$(EmccExtraLDFlags) -lwebgl.js</EmccExtraLDFlags> -->
-        <!-- <EmccExtraCFlags>$(GODOT_CFLAGS) $(GODOT_CCFLAGS)</EmccExtraCFlags> -->
+
+        <!-- It uses different internal export name that it depends upon -->
+        <!-- -Os is causing issues in aot? -->
+        <!-- Multithreading depends on PTHREAD_POOL_SIZE=0 -->
+        <EmccExtraLDFlags>$(GODOT_LINKFLAGS.Replace("-sMODULARIZE=1", "").Replace("-sEXPORT_NAME='Godot'", "").Replace("-Os", "")) -sPTHREAD_POOL_SIZE=0</EmccExtraLDFlags>
+        <!-- Pass used c flags -->
+        <EmccExtraCFlags>$(GODOT_CFLAGS) $(GODOT_CCFLAGS.Replace("-Os", ""))</EmccExtraCFlags>
+        <!-- Detect simd -->
+        <WasmEnableSIMD>$(GODOT_CCFLAGS.Contains('-msimd128').ToString().ToLowerInvariant())</WasmEnableSIMD>
+        <!-- For now it is a separate value, but it can be detected from either link flags or c flags -->
         <WasmEnableThreads>$(GODOT_THREADS)</WasmEnableThreads>
+        <!-- It needs to build some libraries in multithreading -->
         <WasmCachePath>$(IntermediateOutputPath)/em_cache/</WasmCachePath>
-        <!-- <WasmAllowUndefinedSymbols>true</WasmAllowUndefinedSymbols> -->
-        <WasmEnableExceptionHandling>false</WasmEnableExceptionHandling>
+        <!-- Detect exceptions -->
+        <WasmEnableExceptionHandling>true</WasmEnableExceptionHandling>
+        <WasmEnableExceptionHandling Condition="$(GODOT_CXXFLAGS.Contains('-fno-exceptions'))">false</WasmEnableExceptionHandling>
+        <!-- C# uses some libraries that doesn't want to link with -sSUPPORT_LONGJMP=wasm with exceptions disabled -->
+        <EmccExtraLDFlags Condition="$(WasmEnableExceptionHandling) == 'false'">$(EmccExtraLDFlags.Replace("-sSUPPORT_LONGJMP=wasm", ""))</EmccExtraLDFlags>
+        <EmccExtraCFlags Condition="$(WasmEnableExceptionHandling) == 'false'">$(EmccExtraCFlags.Replace("-sSUPPORT_LONGJMP=wasm", ""))</EmccExtraCFlags>
+        <!-- Define for threads -->
+        <DefineConstants Condition="$(WasmEnableThreads) == 'true'">$(DefineConstants);GODOT_THREADS_ENABLED</DefineConstants>
+        <!-- Detect if offscreen canvas is supported -->
+        <UseOffscreenCanvas>false</UseOffscreenCanvas>
+        <UseOffscreenCanvas Condition="$(WasmEnableThreads) == 'true' And $(EmccExtraLDFlags.Contains('-sOFFSCREENCANVAS_SUPPORT=1'))">true</UseOffscreenCanvas>
+        <DefineConstants Condition="$(UseOffscreenCanvas) == 'true'">$(DefineConstants);OFFSCREENCANVAS_ENABLED</DefineConstants>
+
+        <!-- <WasmNativeStrip>false</WasmNativeStrip> -->
         <!-- <RunAOTCompilation>true</RunAOTCompilation> -->
+
+        <PublishTrimmed>true</PublishTrimmed>
+        <!-- Automatically export it for ease of development -->
+        <GodotWebAutoExport>true</GodotWebAutoExport>
     </PropertyGroup>
 
     <ItemGroup Condition="$(GodotType) != ''">
-        <Content Include="$(LibGodotBuildDir)libgodot.$(GodotTargetPlatform).$(GodotTarget).$(GodotArch).$(GodotSuffix)" >
+        <!-- Always copy current library, so that the final name would be "libgodot", some library detection mechanisms depend on it -->
+        <Content Include="$(LibGodotBuildDir)$(GodotLibraryName).$(GodotTargetPlatform).$(GodotTarget).$(GodotSuffix)">
             <Link>libgodot.$(GodotPlatformSuffix)</Link>
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+            <!-- Only copy shared libraries when publishing export templates -->
             <CopyToPublishDirectory Condition="$(GodotType) == 'static'">Never</CopyToPublishDirectory>
             <ExcludeFromSingleFile Condition="$(GodotType) == 'static'">true</ExcludeFromSingleFile>
         </Content>
 
+        <!-- Copy editor libraries when using editor build -->
         <None Include="$(LibGodotBuildDir)GodotSharp/**" Condition="$(GodotTarget) == 'editor'" >
             <LinkBase>GodotSharp\</LinkBase>
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
             <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
         </None>
 
-        <NativeFileReference Include="web_imports.c" Condition="$(GodotTargetPlatform) == 'web'" />
+        <_GodotLibs Include="$(GODOT_LIBS)" />
+        <LinkerArg Include="@(_GodotLibs -> '-l%(Identity)')" Condition="$(GodotTargetPlatform) != 'windows' And @(_GodotLibs) != ''" />
+        <!-- args for windows? -->
+    </ItemGroup>
+
+    <ItemGroup Condition="$(GodotType) != '' And $(GodotTargetPlatform) == 'web'">
+        <!-- Needs it when not running AOT... AOT so far didn't need it, but idk -->
+        <_MonoComponent Include="marshal-ilgen" Condition="$(RunAOTCompilation) != 'true'" />
+
+        <!-- Evil hack, more information inside "transferCanvas.js" -->
+        <LinkerArg Include="--js-library $(MSBuildProjectDirectory)/web_interop/transferCanvas.js" Condition="$(UseOffscreenCanvas) == 'true'" />
+        <EmccExportedLibraryFunction Include="$setupPThreadInterceptor" Condition="$(UseOffscreenCanvas) == 'true'" />
+
+        <!-- Missing functions??? Yeah, couldn't add them, so just stubbed them -->
+        <LinkerArg Include="--js-library $(MSBuildProjectDirectory)/web_interop/setjmpStub.js" />
 
         <EmccExportedFunction Include="$(GODOT_EMCC_EXPORTED_FUNCTIONS)" Condition="$(GODOT_EMCC_EXPORTED_FUNCTIONS) != ''" />
         <EmccExportedRuntimeMethod Include="$(GODOT_EMCC_EXPORTED_RUNTIME_METHODS)" Condition="$(GODOT_EMCC_EXPORTED_RUNTIME_METHODS) != ''" />
-        <EmccExportedLibraryFunction Include="$(GODOT_EMCC_DEFAULT_LIBRARY_FUNCS_TO_INCLUDE)" Condition="$(GODOT_EMCC_DEFAULT_LIBRARY_FUNCS_TO_INCLUDE) != ''" />
 
-        <JSFileType Include="$(GODOT_EMCC_JS_PRE)" Kind="pre-js" Condition="$(GODOT_EMCC_JS_PRE) != ''" />
-        <JSFileType Include="$(GODOT_EMCC_JS_LIBRARIES)" Kind="js-library" Condition="$(GODOT_EMCC_JS_LIBRARIES) != ''" />
-        <JSFileType Include="$(GODOT_EMCC_JS_POST)" Kind="post-js" Condition="$(GODOT_EMCC_JS_POST) != ''" />
+        <_GodotPreJs Include="$(GODOT_EMCC_JS_PRE)" />
+        <_GodotJsLibs Include="$(GODOT_EMCC_JS_LIBRARIES)" />
+        <_GodotPostJs Include="$(GODOT_EMCC_JS_POST)" />
+        <!-- C# wasm lacks 'callMain', but we can use this to simplify starting interaction with godot -->
+        <LinkerArg Include="--post-js $(MSBuildProjectDirectory)/web_interop/callMainStub.js" />
+        <LinkerArg Include="@(_GodotPreJs -> '--pre-js %(Identity)', ' ')" Condition="$(GODOT_EMCC_JS_PRE) != ''" />
+        <LinkerArg Include="@(_GodotJsLibs -> '--js-library %(Identity)', ' ')" Condition="$(GODOT_EMCC_JS_LIBRARIES) != ''" />
+        <LinkerArg Include="@(_GodotPostJs -> '--post-js %(Identity)', ' ')" Condition="$(GODOT_EMCC_JS_POST) != ''" />
     </ItemGroup>
 
     <ItemGroup Condition="$(GodotType) == 'static'">
+        <!-- Root needed assemblies -->
         <TrimmerRootAssembly Include="GodotSharp" />
         <TrimmerRootAssembly Include="$(TargetName)" />
 
         <DirectPInvoke Include="libgodot" />
-        <NativeLibrary Include="$(OutputPath)libgodot.$(GodotPlatformSuffix)" />
+        <!-- Depends on the name -->
+        <NativeLibrary Include="$(OutputPath)libgodot.$(GodotPlatformSuffix)"  />
 
-        <GodotLibs Include="$(GODOT_LIBS)" />
-        <LinkerArg Include="@(GodotLibs -> '-l%(Identity)')" Condition="$(GodotTargetPlatform) != 'windows'" />
-        <!-- args for windows? -->
-
-        <!-- I could only link them with allow-multiple-definition, the error I got was about multiple existing symbols for -->
-        <!-- vtable "Object", I guess Godot's Object and C#'s Object has the same name even in symbol map -->
-        <!-- For now put godot's Object in a namespace -->
-        <!-- <LinkerArg Include="-Wl,- -allow-multiple-definition" Condition="$(RuntimeIdentifier.StartsWith('linux'))" /> -->
+        <!-- Pass flags here if we don't build for web -->
         <LinkerArg Include="$(GODOT_LINKFLAGS)" Condition="$(GodotTargetPlatform) != 'web'" />
     </ItemGroup>
 
+    <ItemGroup Condition="$(GodotTargetPlatform) == 'web' And $(GodotType) == 'shared'">
+        <DirectPInvoke Include="libgodot" />
+        <!-- Docs says you can include ".wasm" files, but you really can't :/ -->
+        <NativeFileReference Include="$(OutputPath)libgodot.$(GodotPlatformSuffix)" />
+    </ItemGroup>
+
+    <!-- Target that builds bundle -->
     <Target Name="GodotBundlePackage" BeforeTargets="GenerateSingleFileBundle" DependsOnTargets="PrepareForBundle" Condition="$(BundlePackage)">
         <PropertyGroup>
-            <ExeSuffix>$(GodotExtraSuffix)executable.mono</ExeSuffix>
-            <ExeSuffix Condition="$(GodotTargetPlatform) == 'windows'">$(ExeSuffix).exe</ExeSuffix>
+            <GodotEditor>$(GodotExtraSuffix)executable.mono</GodotEditor>
+            <GodotEditor Condition="$(GodotTargetPlatform) == 'windows'">$(GodotEditor).exe</GodotEditor>
         </PropertyGroup>
 
         <MakeDir Directories="$(MSBuildProjectDirectory)/export/linux_pck" />
 
-        <Exec Command="$(LibGodotBuildDir)godot.$(GodotTargetPlatform).editor.$(GodotArch).$(ExeSuffix) --export-pack LinuxPck export/linux_pck/$(AssemblyName).pck --headless" ConsoleToMSBuild="true" WorkingDirectory="$(MSBuildProjectDirectory)">
+        <Exec Command="$(LibGodotBuildDir)godot.$(GodotTargetPlatform).editor.$(GodotEditor) --export-pack LinuxPck export/linux_pck/$(AssemblyName).pck --headless" ConsoleToMSBuild="true" WorkingDirectory="$(MSBuildProjectDirectory)">
             <Output TaskParameter="ConsoleOutput" PropertyName="OutputOfExec" />
         </Exec>
 
         <ItemGroup>
+            <!-- Include .pck file -->
             <GodotPck Include="$(MSBuildProjectDirectory)/export/linux_pck/$(AssemblyName).pck" />
             <!-- Add metadata for the relative path for GenerateBundle -->
             <GodotPck RelativePath="$(AssemblyName).pck" />
         </ItemGroup>
         <ItemGroup>
+            <!-- Add .pck file with final path -->
             <FilesToBundle Include="@(GodotPck)" />
         </ItemGroup>
     </Target>
 
+    <Target Name="PrintWebGodotInfo" AfterTargets="Build" Condition="$(GodotType) != '' And $(GodotTargetPlatform) == 'web'">
+        <Message Text="C flags: $(EmccExtraCFlags)" Importance="high" />
+        <Message Text="Godot link flags: $(GODOT_LINKFLAGS)" Importance="high" />
+        <Message Text="Used link flags: $(EmccExtraLDFlags)" Importance="high" />
+        <Message Text="Enable SIMD: $(WasmEnableSIMD)" Importance="high" />
+        <Message Text="Enable exceptions: $(WasmEnableExceptionHandling)" Importance="high" />
+    </Target>
+
+    <!-- Copy normal templates after publish -->
     <Target Name="CopyFiles" AfterTargets="Publish" Condition="$(GodotType) != '' And $(GodotTargetPlatform) != 'web'">
         <ItemGroup>
             <MyDistFiles Include="$(PublishDir)/**" />
         </ItemGroup>
         <Copy SourceFiles="@(MyDistFiles)" DestinationFolder="$(MSBuildProjectDirectory)/templates/$(GodotTargetPlatform)/$(GodotTarget)_$(GodotType)/%(RecursiveDir)"  />
     </Target>
-
-    <Target Name="BuildZip" AfterTargets="Publish" Condition="$(GodotType) != '' And $(GodotTargetPlatform) == 'web'">
+    
+    <!-- Build web template  -->
+    <Target Name="BuildZip" AfterTargets="WasmNestedPublishApp" Condition="$(GodotType) != '' And $(GodotTargetPlatform) == 'web'">
         <PropertyGroup>
             <ZipSuffix>$(GodotExtraSuffix)$(GodotType).mono.zip</ZipSuffix>
-            <GodotWebZip>$(LibGodotBuildDir)godot.$(GodotTargetPlatform).$(GodotTarget).$(GodotArch).$(ZipSuffix)</GodotWebZip>
+            <GodotWebZip>$(LibGodotBuildDir)godot.$(GodotTargetPlatform).$(GodotTarget).$(ZipSuffix)</GodotWebZip>
         </PropertyGroup>
 
         <RemoveDir Directories="$(IntermediateOutputPath)/web_template" />
@@ -160,7 +233,68 @@
             SourceFiles="$(GodotWebZip)"
             DestinationFolder="$(IntermediateOutputPath)/web_template" />
 
-        <!-- ZipDirectory -->
+        <ItemGroup>
+            <!-- Engine file with placeholder for emscripten module -->
+            <GodotJsFile Include="$(IntermediateOutputPath)/web_template/godot.js" />
+            <!-- File with module replacement -->
+            <ImplJsFile Include="$(MSBuildProjectDirectory)/web_interop/GodotImpl.js" />
+        </ItemGroup>
+
+        <ReadLinesFromFile File="@(GodotJsFile)">
+            <Output TaskParameter="Lines" ItemName="GodotJsFileContents" />
+        </ReadLinesFromFile>
+        <ReadLinesFromFile File="@(ImplJsFile)">
+            <Output TaskParameter="Lines" ItemName="ImplJsFileContents" />
+        </ReadLinesFromFile>
+
+        <ItemGroup>
+            <!-- Remove placeholder -->
+            <GodotJsFileContents Remove="___EMSCRIPTEN_JS_PLACEHOLDER___" />
+        </ItemGroup>
+
+        <!-- Combine files and write them -->
+        <WriteLinesToFile File="@(GodotJsFile)" Lines="@(ImplJsFileContents);@(GodotJsFileContents)" Overwrite="true" />
+        
+        <ItemGroup>
+            <WasmAppFiles Include="$(WasmAppDir)/**" />
+        </ItemGroup>
+
+        <!-- Copy _framework to temporary template folder  -->
+        <Copy SourceFiles="@(WasmAppFiles)" DestinationFolder="$(IntermediateOutputPath)/web_template/%(RecursiveDir)"  />
+
+        <!-- Should it handle the editor? -->
+        <!-- Replace placeholder "godot.wasm" with "dotnet.native.wasm" -->
+        <Move 
+            SourceFiles="$(IntermediateOutputPath)/web_template/_framework/dotnet.native.wasm" 
+            DestinationFiles="$(IntermediateOutputPath)/web_template/godot.wasm"/>
+
+        <MakeDir Directories="$(MSBuildProjectDirectory)/templates/$(GodotTargetPlatform)/$(GodotTarget)_$(GodotType)/" />
+
+        <!-- Create the final web template -->
+        <ZipDirectory
+            SourceDirectory="$(IntermediateOutputPath)/web_template"
+            DestinationFile="$(MSBuildProjectDirectory)/templates/$(GodotTargetPlatform)/$(GodotTarget)_$(GodotType)/$(AssemblyName).zip"
+            Overwrite="true" />
     </Target>
 
+    <!-- Automation for easier testing, expects more manual intervention -->
+    <Target Name="ExportWeb" AfterTargets="BuildZip" Condition="$(GodotWebAutoExport) == 'true'">
+        <PropertyGroup>
+            <GodotEditor>godot.linuxbsd.editor.x86_64.executable.mono</GodotEditor>
+            <GodotEditor Condition="$(GodotTargetPlatform) == 'windows'">$(GodotEditor).exe</GodotEditor>
+            <ExportFolder Condition="'$(Configuration)' == 'ExportDebug'" >debug</ExportFolder>
+            <ExportFolder Condition="'$(Configuration)' == 'ExportRelease'">release</ExportFolder>
+
+            <ExportType>WebNothreads</ExportType>
+            <ExportType Condition="$(WasmEnableThreads) == 'true'">Web</ExportType>
+
+        </PropertyGroup>
+
+        <RemoveDir Directories="$(MSBuildProjectDirectory)/export/$(ExportType)_static_$(ExportFolder)" />
+        <MakeDir Directories="$(MSBuildProjectDirectory)/export/$(ExportType)_static_$(ExportFolder)" />
+
+        <Exec Command="$(LibGodotBuildDir)$(GodotEditor) --export-$(ExportFolder) $(ExportType) export/$(ExportType)_static_$(ExportFolder)/index.html --headless" ConsoleToMSBuild="true" WorkingDirectory="$(MSBuildProjectDirectory)">
+            <Output TaskParameter="ConsoleOutput" PropertyName="OutputOfExec" />
+        </Exec>
+    </Target>
 </Project>

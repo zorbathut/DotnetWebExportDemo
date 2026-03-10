@@ -23,7 +23,7 @@ __call_print() {
 
 
 __parse_args(){
-    local cli_args=("mono" "executable" "static" "shared" "suffix" "arch" "platform")
+    local cli_args=("editor" "template_debug" "template_release" "mono" "executable" "static" "shared" "suffix" "arch" "platform")
     while :; do
         local matched=false
         local variable="$1"
@@ -52,16 +52,19 @@ __parse_godot_args() {
     local local_suffix=""
     __parse_args "$@"
 
-    if [ "$arg_executable" = true ]; then
-        type_args="library_type=executable"
-        local_suffix="executable"
-    elif [ "$arg_static" = true ]; then
-        type_args="library_type=static_library lto=none"
+    arg_executable=true
+    type_args="library_type=executable"
+    local_suffix="executable"
+    if [ "$arg_static" = true ]; then
+        arg_executable=false
+        type_args="library_type=static_library"
         local_suffix="static"
     elif [ "$arg_shared" = true ]; then
+        arg_executable=false
         type_args="library_type=shared_library"
         local_suffix="shared"
     fi
+
     if [ "$arg_mono" = true ]; then
         mono_args="module_mono_enabled=yes"
     fi
@@ -72,62 +75,54 @@ __parse_godot_args() {
         type_args="platform=$arg_platform $type_args"
     fi
 
-    if [ "$arg_mono" = true ] && [ "$arg_platform" = "web" ]; then
-        local dotnet_emsdk=/usr/share/dotnet/packs/Microsoft.NET.Runtime.Emscripten.3.1.56.Sdk.linux-x64/10.0.3/
-        local dotnet_emsdk_node=/usr/share/dotnet/packs/Microsoft.NET.Runtime.Emscripten.3.1.56.Node.linux-x64/10.0.3/
-        export EMSDK_PATH=$dotnet_emsdk/tools
-        export DOTNET_EMSCRIPTEN_LLVM_ROOT=$EMSDK_PATH/bin
-        export DOTNET_EMSCRIPTEN_NODE_JS=$dotnet_emsdk_node/tools/bin/node
-        export DOTNET_EMSCRIPTEN_BINARYEN_ROOT=$EMSDK_PATH
-        export FROZEN_CACHE=""
-        export EM_CACHE=./bin/em_cache
-        mkdir -p ./bin/em_cache
-        source $dotnet_emsdk/tools/emsdk_env.sh
-    fi
-
     if __string_contain "llvm" "$arg_suffix"; then
         type_args="$type_args linker=lld use_llvm=yes"
     fi
+
+    if [ "$arg_platform" = "web" ]; then
+        type_args="$type_args import_env_vars=EMSDK"
+    fi
+    
 }
 
 
 __build_godot_editor() {
-    __parse_godot_args "$@"
-
     __call_print scons target=editor $type_args production=yes debug_symbols=yes compiledb=yes disable_path_overrides=no $mono_args ${arg_rest[@]}
     if [ "$arg_executable" = true ] && [ -n "$mono_args" ]; then
         __call_print find ./bin -name "godot.*.editor.*executable.mono*" -type f -exec {} --generate-mono-glue ./modules/mono/glue --headless ';'
         __call_print ./modules/mono/build_scripts/build_assemblies.py --godot-output-dir ./bin --push-nupkgs-local ./../.nuget_local/
     fi
 }
-
-
 __build_godot_template_debug() {
-    __parse_godot_args "$@"
-
     __call_print scons target=template_debug $type_args production=yes debug_symbols=yes compiledb=yes disable_path_overrides=no $mono_args ${arg_rest[@]}
 }
-
-
 __build_godot_template_release() {
-    __parse_godot_args "$@"
-
     __call_print scons target=template_release $type_args production=yes compiledb=yes disable_path_overrides=no $mono_args ${arg_rest[@]}
 }
 
 
 __build_godot() {
     cd ./godot
-    if [ "$1" = "editor" ]; then
-        __build_godot_editor "${@:2}"
-    elif [ "$1" = "template_debug" ]; then
-        __build_godot_template_debug "${@:2}"
-    elif [ "$1" = "template_release" ]; then
-        __build_godot_template_release "${@:2}"
-    else
-        __build_godot_editor "$@"
-        __build_godot_template_debug "$@"
-        __build_godot_template_release "$@"
+    local built=false
+    __parse_godot_args "$@"
+
+    if [ "$arg_editor" = true ]; then
+        __build_godot_editor
+        built=true
+    fi
+    if [ "$arg_template_debug" = true ]; then
+        __build_godot_template_debug
+        built=true
+    fi
+    if [ "$arg_template_release" = true ]; then
+        __build_godot_template_release
+        built=true
+    fi
+
+    if [ "$built" = false ]; then
+        __build_godot_editor
+        __build_godot_template_debug
+        __build_godot_template_release
     fi
     cd ./..
 }
@@ -178,32 +173,28 @@ __build_cpp_generic() {
 }
 
 
-__build_cpp_editor() {
-    __parse_cpp_args "$@"
-    __build_cpp_generic editor
-}
-__build_cpp_template_debug() {
-    __parse_cpp_args "$@"
-    __build_cpp_generic template_debug
-}
-__build_cpp_template_release() {
-    __parse_cpp_args "$@"
-    __build_cpp_generic template_release
-}
-
-
 __build_cpp() {
     cd ./cpp_project
-    if [ "$1" = "editor" ]; then
-        __build_cpp_editor "${@:2}"
-    elif [ "$1" = "template_debug" ]; then
-        __build_cpp_template_debug "${@:2}"
-    elif [ "$1" = "template_release" ]; then
-        __build_cpp_template_release "${@:2}"
-    else
-        __build_cpp_editor "$@"
-        __build_cpp_template_debug "$@"
-        __build_cpp_template_release "$@"
+    local built=false
+    __parse_cpp_args "$@"
+
+    if [ "$arg_editor" = true ]; then
+        __build_cpp_generic editor
+        built=true
+    fi
+    if [ "$arg_template_debug" = true ]; then
+        __build_cpp_generic template_debug
+        built=true
+    fi
+    if [ "$arg_template_release" = true ]; then
+        __build_cpp_generic template_release
+        built=true
+    fi
+
+    if [ "$built" = false ]; then
+        __build_cpp_generic editor
+        __build_cpp_generic template_debug
+        __build_cpp_generic template_release
     fi
     cd ./..
 }
@@ -248,32 +239,28 @@ __build_csharp_generic() {
 }
 
 
-__build_csharp_editor() {
-    __parse_csharp_args "$@"
-    __build_csharp_generic Debug
-}
-__build_csharp_template_debug() {
-    __parse_csharp_args "$@"
-    __build_csharp_generic ExportDebug
-}
-__build_csharp_template_release() {
-    __parse_csharp_args "$@"
-    __build_csharp_generic ExportRelease
-}
-
-
 __build_csharp() {
     cd ./csharp_project
-    if [ "$1" = "editor" ]; then
-        __build_csharp_editor "${@:2}"
-    elif [ "$1" = "template_debug" ]; then
-        __build_csharp_template_debug "${@:2}"
-    elif [ "$1" = "template_release" ]; then
-        __build_csharp_template_release "${@:2}"
-    else
-        __build_csharp_editor "$@"
-        __build_csharp_template_debug "$@"
-        __build_csharp_template_release "$@"
+    local built=false
+    __parse_csharp_args "$@"
+
+    if [ "$arg_editor" = true ]; then
+        __build_csharp_generic Debug
+        built=true
+    fi
+    if [ "$arg_template_debug" = true ]; then
+        __build_csharp_generic ExportDebug
+        built=true
+    fi
+    if [ "$arg_template_release" = true ]; then
+        __build_csharp_generic ExportRelease
+        built=true
+    fi
+
+    if [ "$built" = false ]; then
+        __build_csharp_generic Debug
+        __build_csharp_generic ExportDebug
+        __build_csharp_generic ExportRelease
     fi
     cd ./..
 }
@@ -298,7 +285,7 @@ __run_cpp() {
     if ! ls -d ./templates/$godot_platform/editor_$godot_type/editor > /dev/null; then
         __build_cpp_generic editor
     fi
-    __call_print ./templates/$godot_platform/editor_$godot_type/editor --editor
+    __call_print ./templates/$godot_platform/editor_$godot_type/editor 
     cd ./..
 }
 
@@ -324,10 +311,16 @@ start() {
 
 print_help() {
     echo "Available commands:"
-    echo "-bash run build godot [editor|template_debug|template_release] executable|static|shared [mono] [platform=(linuxbsd|windows|macos|web)] [scons args]"
-    echo "-bash run build cpp [static|shared] [editor|template_debug|template_release] [suffix=] [arch=] platform=(linuxbsd|windows|macos|web)"
-    echo "-bash run build csharp [static|shared] [editor|template_debug|template_release] [suffix=] [arch=] platform=(linuxbsd|windows|macos|web)"
-    echo "-bash run -i [command]: will enable interactive mode"
+    echo "  bash run build godot [editor] [template_debug] [template_release] [executable|static|shared] [mono] [platform=(linuxbsd|windows|macos|web)] [scons args]"
+    echo "  bash run build cpp [editor] [template_debug] [template_release] [static|shared] [suffix=*] [arch=*] platform=(linuxbsd|windows|macos|web) [cmake configure args]"
+    echo "  bash run build csharp [editor] [template_debug] [template_release] [static|shared] [suffix=*] [arch=*] [platform=(linuxbsd|windows|macos|web)] [msbuild args]"
+    echo "  bash run start cpp [suffix=*] [arch=*] platform=(linuxbsd|windows|macos|web) [cmake configure args]"
+    echo "  bash run start csharp [suffix=*] [arch=*] [platform=(linuxbsd|windows|macos|web)] [msbuild args]"
+    echo ""
+    echo "Commands inside [] are optional, arguments with '=' expect value, '*' is any value"
+    echo ""
+    echo "Available modifiers:"
+    echo "  bash run -i [command]: will enable interactive mode, you can choose if you want to lauch the command"
 }
 
 

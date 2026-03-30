@@ -15,11 +15,15 @@ NUGET_DIR="$SCRIPT_DIR/.nuget_local"
 
 echo "=== Activating environments ==="
 
-source "$SCRIPT_DIR/.venv/bin/activate"
-echo "  venv: $VIRTUAL_ENV"
+if [ -f "$SCRIPT_DIR/.venv/bin/activate" ]; then
+    source "$SCRIPT_DIR/.venv/bin/activate"
+    echo "  venv: $VIRTUAL_ENV"
+fi
 
-source "$HOME/emsdk/emsdk_env.sh"
-echo "  emsdk: $EMSDK"
+if [ -f "$HOME/emsdk/emsdk_env.sh" ]; then
+    source "$HOME/emsdk/emsdk_env.sh"
+    echo "  emsdk: $EMSDK"
+fi
 
 # ─── Prerequisites ───────────────────────────────────────────────────────────
 
@@ -32,6 +36,11 @@ for cmd in scons dotnet emcc; do
         exit 1
     fi
 done
+
+if [ -z "${EMSDK:-}" ]; then
+    echo "ERROR: EMSDK environment variable is not set"
+    exit 1
+fi
 
 EMCC_VERSION="$(emcc --version | head -1)"
 if ! echo "$EMCC_VERSION" | grep -q "3.1.56"; then
